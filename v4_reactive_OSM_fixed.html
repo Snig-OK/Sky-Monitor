@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sky Monitor Pro v4</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+    
+    <style>
+        html, body, #map {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #f0f0f0;
+        }
+        .leaflet-tile-container {
+            filter: contrast(120%) brightness(95%);
+        }
+        .analysis-popup {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 14px;
+            line-height: 1.5;
+            color: #333;
+            min-width: 250px;
+        }
+        .analysis-title {
+            font-size: 16px;
+            font-weight: bold;
+            border-bottom: 2px solid #ff4d4d;
+            padding-bottom: 4px;
+            margin-bottom: 6px;
+        }
+        .flight-time {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 2px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+<script>
+    let myLat = 49.8269;
+    let myLon = 23.9730;
+    let targetLat = 49.6354;
+    let targetLon = 24.2934;
+
+    // Швидкості в км/год
+    const speeds = {
+        shahed: 180,
+        shahedJet: 500,
+        kh101: 800,
+        kalibr: 980,
+        ballistic: 7500,
+        kinzhal: 10000
+    };
+
+    const map = L.map('map').setView([myLat, myLon], 10);
+
+    const HeaderTileLayer = L.TileLayer.extend({
+    createTile: function(coords, done) {
+        const tile = document.createElement('img');
+
+        fetch(this.getTileUrl(coords), {
+            headers: {
+                'X-Requested-With': 'Sky-Monitor-Pro-v4'
+            }
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return response.blob();
+        })
+        .then(blob => {
+            const url = URL.createObjectURL(blob);
+
+            tile.onload = () => {
+                URL.revokeObjectURL(url);
+                done(null, tile);
+            };
+
+            tile.onerror = () => {
+                URL.revokeObjectURL(url);
+                done(new Error('Помилка завантаження тайла'), tile);
+            };
+
+            tile.src = url;
+        })
+        .catch(error => {
+            done(error, tile);
+        });
+
+        return tile;
+    }
+});
+
+new HeaderTileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+    L.Control.geocoder({
+        defaultMarkGeocode: false,
+        placeholder: "Пошук населеного пункту...",
+        errorMessage: "Нічого не знайдено"
+    })
+    .on('markgeocode', function(e) {
+        var bbox = e.geocode.bbox;
+        var poly = L.polygon([
+            bbox.getSouthEast(),
+            bbox.getNorthEast(),
+            bbox.getNorthWest(),
+            bbox.getSouthWest()
+        ]);
+        map.fitBounds(poly.getBounds());
+    })
+    .addTo(map);
+
+    function getDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    function formatTime(hoursTotal) {
+        let totalSeconds = Math.round(hoursTotal * 3600);
+        let hours = Math.floor(totalSeconds / 3600);
+        let minutes = Math.floor((totalSeconds % 3600) / 60);
+        let seconds = totalSeconds % 60;
+
+        let result = "";
+        if (hours > 0) result += hours + " год ";
+        if (minutes > 0 || hours > 0) result += minutes + " хв ";
+        result += seconds + " сек";
+        
+        return result;
+    }
+
+    const homeMarker = L.marker([myLat, myLon], { 
+        draggable: true,
+        title: "Моє розташування"
+    }).addTo(map);
+
+    const redIcon = new L.Icon({
+        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        shadowSize: [41, 41]
+    });
+
+    const targetMarker = L.marker([targetLat, targetLon], { 
+        draggable: true,
+        icon: redIcon,
+        autoPan: true
+    }).addTo(map);
+
+    const polyline = L.polyline([[myLat, myLon], [targetLat, targetLon]], {
+        color: '#ff4d4d',
+        weight: 3,
+        dashArray: '6, 12',
+        opacity: 0.9
+    }).addTo(map);
+
+    function updateAnalysis() {
+        const homePos = homeMarker.getLatLng();
+        const targetPos = targetMarker.getLatLng();
+        const dist = getDistance(homePos.lat, homePos.lng, targetPos.lat, targetPos.lng);
+        
+        polyline.setLatLngs([[homePos.lat, homePos.lng], [targetPos.lat, targetPos.lng]]);
+
+        const popupContent = `
+        <div class="analysis-popup">
+            <div class="analysis-title">&#128202; Аналіз підльоту</div>
+            <div style="margin-bottom: 8px;">Відстань по прямій: <b>${dist.toFixed(2)} км</b></div>
+            <div class="flight-time"><span>&#128757; Шахед (~180):</span> <b>${formatTime(dist / speeds.shahed)}</b></div>
+            <div class="flight-time"><span>&#128640; Реактивний Шахед (~500):</span> <b>${formatTime(dist / speeds.shahedJet)}</b></div>
+            <div class="flight-time"><span>&#9992;&#65039; Х-101 (~800):</span> <b>${formatTime(dist / speeds.kh101)}</b></div>
+            <div class="flight-time"><span>&#128640; Калібр (~980):</span> <b>${formatTime(dist / speeds.kalibr)}</b></div>
+            <div class="flight-time"><span>&#128165; Балістика (~7500):</span> <b>${formatTime(dist / speeds.ballistic)}</b></div>
+            <div class="flight-time"><span>&#9889; Кинджал (~10000):</span> <b>${formatTime(dist / speeds.kinzhal)}</b></div>
+            <div style="font-size:11px; color:#777; margin-top: 8px; text-align: center;">(Маркери можна перетягувати)</div>
+        </div>
+    `;
+
+        targetMarker.bindPopup(popupContent, { offset: [0, -10] }).openPopup();
+    }
+
+    targetMarker.on('drag', updateAnalysis);
+    targetMarker.on('dragend', updateAnalysis);
+    homeMarker.on('drag', updateAnalysis);
+    homeMarker.on('dragend', updateAnalysis);
+
+    map.on('click', function(e) {
+        targetMarker.setLatLng(e.latlng);
+        updateAnalysis();
+    });
+
+    updateAnalysis();
+</script>
+</body>
+</html>
